@@ -1,0 +1,464 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Роль с матрицей прав (PermissionKey из packages/shared). Системная роль admin
+// получает все права из кода, isSystem-роли нельзя удалить/переименовать.
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  permissions String[] @default([])
+  isSystem    Boolean  @default(false)
+  users       User[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  roleId       String
+  role         Role     @relation(fields: [roleId], references: [id])
+  active       Boolean  @default(true) // false = вход заблокирован (увольнение), запись не удаляется
+  passwordHash String
+  assignedDeals Deal[]  @relation("AssignedDeals")
+  tasks        Task[]
+  teacherLessons Lesson[] @relation("TeacherLessons")
+  ownedEmailAccounts EmailAccount[] @relation("EmailAccountOwner")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Pipeline {
+  id          String       @id @default(cuid())
+  name        String
+  stages      Stage[]
+  deals       Deal[]
+  automations Automation[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model Stage {
+  id         String   @id @default(cuid())
+  name       String
+  color      String   @default("#6366f1")
+  order      Int
+  type       String   @default("open") // open | won | lost
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  deals      Deal[]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([pipelineId, order])
+}
+
+model LostReason {
+  id        String   @id @default(cuid())
+  name      String
+  order     Int      @default(0)
+  active    Boolean  @default(true) // мягкое скрытие вместо удаления — на причину ссылаются сделки
+  deals     Deal[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Deal {
+  id            String     @id @default(cuid())
+  title         String
+  budget        Decimal?   @db.Decimal(15, 2)
+  stageId       String
+  stage         Stage      @relation(fields: [stageId], references: [id])
+  pipelineId    String
+  pipeline      Pipeline   @relation(fields: [pipelineId], references: [id])
+  assigneeId    String?
+  assignee      User?      @relation("AssignedDeals", fields: [assigneeId], references: [id])
+  contactId     String?
+  contact       Contact?   @relation(fields: [contactId], references: [id])
+  companyId     String?
+  company       Company?   @relation(fields: [companyId], references: [id])
+  custom_fields Json       @default("{}")
+  tags          String[]   @default([])
+  stageEnteredAt DateTime  @default(now())
+  lostReasonId  String?
+  lostReason    LostReason? @relation(fields: [lostReasonId], references: [id], onDelete: SetNull)
+  lostComment   String?
+  closedAt      DateTime?  // момент входа в won/lost этап; null у открытых сделок
+  deletedAt     DateTime?  // мягкое удаление (корзина); стирается навсегда через 30 дней
+  tasks         Task[]
+  activities    Activity[]
+  messages      Message[]
+  calls         Call[]
+  trials        TrialLesson[]
+  subscriptions Subscription[]
+  payments      Payment[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@index([pipelineId])
+  @@index([stageId])
+  @@index([assigneeId])
+  @@index([contactId])
+  @@index([lostReasonId])
+  @@index([deletedAt, createdAt])
+}
+
+model TrialLesson {
+  id                String   @id @default(cuid())
+  dealId            String
+  deal              Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  scheduledAt       DateTime
+  status            String   @default("scheduled") // scheduled | completed | no_show | canceled
+  reminderTransport String   // whatsapp | telegram | tgapi | max | maxbot | vk | sms (legacy: первый из reminderTargets)
+  reminderChatId    String?  // резолвнутый chatId; для sms — телефон в цифрах (legacy: первый из reminderTargets)
+  reminderTargets   Json     @default("[]") // [{transport, chatId}] — все получатели напоминаний
+  remindersSent     Json     @default("[]") // отправленные офсеты (минуты) для текущего scheduledAt
+  createdById       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([dealId])
+  @@index([status, scheduledAt])
+}
+
+model Contact {
+  id               String           @id @default(cuid())
+  name             String
+  phone            String?
+  email            String?
+  telegramUsername String?
+  wazzupChatId     String?
+  wazzupChannel    String?
+  companyId        String?
+  company          Company?         @relation(fields: [companyId], references: [id])
+  custom_fields    Json             @default("{}")
+  tags             String[]         @default([])
+  deals            Deal[]
+  tasks            Task[]
+  messages         Message[]
+  phones           ContactPhone[]
+  emails           ContactEmail[]
+  channels         ContactChannel[]
+  subscriptions    Subscription[]
+  payments         Payment[]
+  deletedAt        DateTime?        // мягкое удаление (корзина)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([companyId])
+  @@index([phone])
+  @@index([wazzupChatId])
+  @@index([deletedAt, createdAt])
+}
+
+model ContactPhone {
+  id        String   @id @default(cuid())
+  contactId String
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  phone     String
+  label     String?  @default("mobile")
+  createdAt DateTime @default(now())
+
+  @@index([contactId])
+}
+
+model ContactEmail {
+  id        String   @id @default(cuid())
+  contactId String
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  email     String
+  label     String?
+  createdAt DateTime @default(now())
+
+  @@index([contactId])
+}
+
+model ContactChannel {
+  id        String   @id @default(cuid())
+  contactId String
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  transport String
+  chatId    String
+  updatedAt DateTime @updatedAt
+
+  @@unique([contactId, transport])
+  @@index([contactId])
+}
+
+model Company {
+  id            String    @id @default(cuid())
+  name          String
+  custom_fields Json      @default("{}")
+  contacts      Contact[]
+  deals         Deal[]
+  tasks         Task[]
+  deletedAt     DateTime? // мягкое удаление (корзина)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([deletedAt, createdAt])
+}
+
+model Task {
+  id          String    @id @default(cuid())
+  title       String
+  description String?
+  dueDate     DateTime?
+  completed   Boolean   @default(false)
+  result      String?
+  priority    String    @default("normal")
+  dealId      String?
+  deal        Deal?     @relation(fields: [dealId], references: [id])
+  contactId   String?
+  contact     Contact?  @relation(fields: [contactId], references: [id])
+  companyId   String?
+  company     Company?  @relation(fields: [companyId], references: [id])
+  assigneeId  String
+  assignee    User      @relation(fields: [assigneeId], references: [id])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([assigneeId])
+  @@index([dealId])
+  @@index([dueDate])
+}
+
+model FieldDefinition {
+  id                 String   @id @default(cuid())
+  entityType         String
+  key                String
+  label              String
+  fieldType          String
+  options            Json?
+  order              Int      @default(0)
+  required           Boolean  @default(false)
+  requiredAtStageIds String[] @default([])
+  pipelineId         String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([entityType, key, pipelineId])
+  @@index([entityType, pipelineId])
+}
+
+model Automation {
+  id         String   @id @default(cuid())
+  name       String
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  trigger    Json
+  actions    Json
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([pipelineId])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  dealId    String?
+  deal      Deal?    @relation(fields: [dealId], references: [id])
+  userId    String?
+  type      String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@index([dealId, createdAt])
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  dealId      String?
+  deal        Deal?    @relation(fields: [dealId], references: [id])
+  contactId   String?
+  contact     Contact? @relation(fields: [contactId], references: [id])
+  wazzupId    String?  @unique
+  channel     String
+  channelId   String?   // WazzUp channelId — наш конкретный номер/бот (см. wazzup_channels), не транспорт
+  chatId      String?   // сырой WazzUp chatId получателя/отправителя ЭТОГО сообщения (без форматирования)
+  direction   String
+  content     String
+  status      String    @default("sent")
+  errorMsg    String?
+  scheduledAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  // Email (channel: "email")
+  subject        String?
+  bodyHtml       String?
+  toAddresses    String[]      @default([])
+  ccAddresses    String[]      @default([])
+  emailMessageId String?       @unique // RFC822 Message-ID — идемпотентность приёма, как wazzupId
+  emailInReplyTo String?
+  threadKey      String?       // группировка для единого инбокса «Почта»: contactId либо email внешней стороны
+  readAt         DateTime?     // непрочитанные в разделе «Почта»
+  emailAccountId String?
+  emailAccount   EmailAccount? @relation(fields: [emailAccountId], references: [id], onDelete: SetNull)
+  attachments    Attachment[]
+
+  @@index([dealId])
+  @@index([contactId, createdAt])
+  @@index([channel, threadKey])
+  @@index([emailAccountId])
+  @@index([readAt])
+}
+
+model EmailAccount {
+  id              String    @id @default(cuid())
+  label           String
+  emailAddress    String
+  fromName        String?
+  smtpHost        String
+  smtpPort        Int
+  smtpSecure      Boolean   @default(true)
+  smtpUser        String
+  smtpPassword    String
+  imapHost        String
+  imapPort        Int
+  imapSecure      Boolean   @default(true)
+  imapUser        String
+  imapPassword    String
+  ownerId         String
+  owner           User      @relation("EmailAccountOwner", fields: [ownerId], references: [id])
+  allowedUserIds  String[]  @default([]) // менеджеры, которым разрешено отправлять из этого ящика (кроме owner/admin)
+  active          Boolean   @default(true)
+  imapUidValidity BigInt?
+  lastImapUid     Int       @default(0)
+  lastPolledAt    DateTime?
+  lastError       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  messages        Message[]
+
+  @@index([ownerId])
+}
+
+model Attachment {
+  id         String   @id @default(cuid())
+  messageId  String
+  message    Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  filename   String
+  mimeType   String
+  size       Int
+  storageKey String // ключ объекта в S3-совместимом хранилище
+  createdAt  DateTime @default(now())
+
+  @@index([messageId])
+}
+
+model Call {
+  id          String   @id @default(cuid())
+  dealId      String?
+  deal        Deal?    @relation(fields: [dealId], references: [id])
+  uisCallId   String?  @unique
+  direction   String
+  duration    Int?
+  recordUrl   String?
+  phone       String?
+  createdAt   DateTime @default(now())
+
+  @@index([dealId])
+  @@index([phone])
+}
+
+model IntegrationSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model Package {
+  id                    String         @id @default(cuid())
+  name                  String
+  lessonsCount          Int
+  lessonDurationMinutes Int? // длительность одного урока, мин (напр. 45/60)
+  durationDays          Int? // null = бессрочный
+  price         Decimal        @db.Decimal(15, 2)
+  active        Boolean        @default(true)
+  subscriptions Subscription[]
+  payments      Payment[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+model Subscription {
+  id           String    @id @default(cuid())
+  contactId    String
+  contact      Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  dealId       String? // сделка-источник
+  deal         Deal?     @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  packageId    String?
+  package      Package?  @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  packageName  String // снапшот: пакет могут переименовать/удалить
+  lessonsTotal Int // снапшот с учётом ручной корректировки
+  lessonsUsed  Int       @default(0) // баланс = lessonsTotal - lessonsUsed, отдельно не храним
+  price        Decimal   @db.Decimal(15, 2)
+  status       String    @default("active") // active | exhausted | expired | canceled
+  startsAt     DateTime  @default(now())
+  expiresAt    DateTime?
+  lessons      Lesson[]
+  paymentId    String?   @unique // 1:1 с платежом — защита от дубля подписки при повторном вебхуке
+  payment      Payment?  @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([contactId])
+  @@index([dealId])
+  @@index([status, expiresAt])
+}
+
+model Payment {
+  id           String    @id @default(cuid())
+  invoiceId    Int       @unique @default(autoincrement()) // числовой — требование Robokassa InvId; используем для обоих провайдеров
+  dealId       String?
+  deal         Deal?     @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  contactId    String?
+  contact      Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  packageId    String?
+  package      Package?  @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  packageName  String // снапшот с учётом override
+  lessonsTotal Int
+  durationDays Int?
+  amount       Decimal   @db.Decimal(15, 2)
+  currency     String    @default("RUB")
+  provider     String // cloudpayments | robokassa
+  status       String    @default("pending") // pending | succeeded | failed | canceled; succeeded терминален, ставится только вебхуком
+  paymentUrl   String?
+  externalId   String? // TransactionId CloudPayments; у Робокассы нет
+  paidAt       DateTime?
+  rawWebhook   Json?
+  subscription Subscription?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([dealId])
+  @@index([contactId])
+  @@index([status])
+}
+
+model Lesson {
+  id             String       @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  teacherId      String?
+  teacher        User?        @relation("TeacherLessons", fields: [teacherId], references: [id], onDelete: SetNull)
+  scheduledAt    DateTime
+  status         String       @default("scheduled") // scheduled | completed | canceled | no_show; completed и no_show списывают урок
+  note           String?
+  createdById    String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([subscriptionId])
+  @@index([teacherId, scheduledAt])
+  @@index([status, scheduledAt])
+}

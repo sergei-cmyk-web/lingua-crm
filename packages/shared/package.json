@@ -1,0 +1,15 @@
+{
+  "name": "@crm/shared",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "_comment_prepare": "npm запускает prepare после install — без него dist/ отсутствует на чистом клоне, и api падает с 'Cannot find module @crm/shared/dist/index.js'",
+    "prepare": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
